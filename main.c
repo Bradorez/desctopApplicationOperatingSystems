@@ -76,6 +76,8 @@ static void on_add_clicked(GtkButton *btn, gpointer user_data)
     p->burst     = atoi(burst_txt);
     p->remaining = p->burst;
     g_ptr_array_add(app->processes, p);
+    int rows = app->processes->len;
+    gtk_widget_set_size_request(GTK_WIDGET(app->canvas), -1, rows * 24 + 10);
 
     add_process_to_view(app, p);
 
@@ -95,54 +97,168 @@ static void on_clear_clicked(GtkButton *btn, gpointer user_data)
     g_ptr_array_set_size(app->processes,0);
 }
 
-/* ----------  Draw callback: simple Gantt rectangles ---------- */
-static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data)
+/* Pretty colours for rows */
+static void set_color_for_pid(cairo_t *cr, int pid)
 {
-    App *app = data;
-    const int bar_h = 20;
-    const int y = 10;
-
-    /* background */
-    cairo_set_source_rgb(cr, 1,1,1);
-    cairo_paint(cr);
-
-    /* timeline axis */
-    cairo_set_source_rgb(cr, 0,0,0);
-    cairo_move_to(cr, 0, y+bar_h+5);
-    cairo_line_to(cr, w, y+bar_h+5);
-    cairo_stroke(cr);
-
-    /* naive visual: draw finished slice for running proc */
-    if (app->running) {
-        double frac = 1.0 - (double)app->running->remaining / app->running->burst;
-        cairo_set_source_rgb(cr, 0.3,0.7,1.0);
-        cairo_rectangle(cr, 0, y, frac * w, bar_h);
-        cairo_fill(cr);
-    }
+    /* simple deterministic pastel palette */
+    const double base[3] = {0.3, 0.6, 0.9};
+    cairo_set_source_rgb(cr,
+        fmod(base[0] + (pid*0.17), 1.0),
+        fmod(base[1] + (pid*0.29), 1.0),
+        fmod(base[2] + (pid*0.41), 1.0));
 }
+
+static void draw_cb(GtkDrawingArea *area,
+    cairo_t        *cr,
+    int             width,
+    int             height,
+    gpointer        data)
+{
+App *app = data;
+const int row_h   = 24;       /* 20-px bar + 4-px spacing  */
+const int label_w = 50;       /* space for “PID” labels    */
+const int text_off= 4;        /* padding for text          */
+
+/* White background */
+cairo_set_source_rgb(cr, 1,1,1);
+cairo_paint(cr);
+
+/* Loop over processes that have ARRIVED */
+int visible_i = 0;
+for (guint i = 0; i < app->processes->len; ++i)
+{
+Process *p = g_ptr_array_index(app->processes, i);
+if (p->arrival > app->clock)         /* not yet in the system */
+continue;
+
+int y  = visible_i * row_h;
+int bar_w = width - label_w - 80;    /* leave room for “waiting/done” */
+
+/* 1️⃣  PID label */
+cairo_set_source_rgb(cr, 0,0,0);
+cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                      CAIRO_FONT_WEIGHT_NORMAL);
+cairo_set_font_size(cr, 12);
+char pid_txt[16]; snprintf(pid_txt,sizeof(pid_txt),"P%d",p->pid);
+cairo_move_to(cr, text_off, y + 16);
+cairo_show_text(cr, pid_txt);
+
+/* 2️⃣  Bar background (light gray box) */
+cairo_set_source_rgb(cr, .9,.9,.9);
+cairo_rectangle(cr, label_w, y + 2, bar_w, 20);
+cairo_fill(cr);
+
+/* 3️⃣  Filled part */
+double frac = 1.0 - (double)p->remaining / p->burst;
+set_color_for_pid(cr, p->pid);
+cairo_rectangle(cr, label_w, y + 2, frac * bar_w, 20);
+cairo_fill(cr);
+
+/* 4️⃣  State text (waiting / done) */
+const char *state = NULL;
+if (p->remaining == 0)
+state = "done";
+else if (p != app->running)
+state = "waiting";
+
+if (state)
+{
+cairo_set_source_rgb(cr, 0,0,0);
+cairo_move_to(cr, label_w + bar_w + text_off, y + 16);
+cairo_show_text(cr, state);
+}
+
+++visible_i;
+}
+}
+
+// /* ----------  Draw callback: simple Gantt rectangles ---------- */
+// static void draw_cb(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data)
+// {
+//     App *app = data;
+//     const int bar_h = 20;
+//     const int y = 10;
+
+//     /* background */
+//     cairo_set_source_rgb(cr, 1,1,1);
+//     cairo_paint(cr);
+
+//     /* timeline axis */
+//     cairo_set_source_rgb(cr, 0,0,0);
+//     cairo_move_to(cr, 0, y+bar_h+5);
+//     cairo_line_to(cr, w, y+bar_h+5);
+//     cairo_stroke(cr);
+
+//     /* naive visual: draw finished slice for running proc */
+//     if (app->running) {
+//         double frac = 1.0 - (double)app->running->remaining / app->running->burst;
+//         cairo_set_source_rgb(cr, 0.3,0.7,1.0);
+//         cairo_rectangle(cr, 0, y, frac * w, bar_h);
+//         cairo_fill(cr);
+//     }
+// }
 
 /* ----------  Algorithm stubs (1 tick each) ---------- */
 static void scheduler_fcfs(App *app, int tick)     { /* TODO */ }
 static void scheduler_sjn (App *app, int tick)     { /* TODO */ }
 static void scheduler_srt (App *app, int tick)     { /* TODO */ }
-static void scheduler_rr  (App *app, int tick)
+
+
+static void scheduler_rr(App *app, int tick)
 {
-    /* simple demo: just decrement running->remaining & quantum_left */
-    if (!app->running) {
-        /* pick first ready proc */
-        for (guint i=0;i<app->processes->len;i++) {
-            Process *p=g_ptr_array_index(app->processes,i);
-            if (p->arrival<=app->clock && p->remaining>0) { app->running=p; break;}
+    static int last_index = -1;  // index of last run process in round-robin cycle
+
+    // If no current process OR it finished OR quantum expired
+    if (!app->running || app->running->remaining == 0 || app->quantum_left == 0)
+    {
+        // Reset running process if it finished
+        if (app->running && app->running->remaining == 0)
+            app->running = NULL;
+
+        // Search for next process in round-robin order
+        guint total = app->processes->len;
+        for (guint offset = 1; offset <= total; offset++) {
+            guint i = (last_index + offset) % total;
+            Process *p = g_ptr_array_index(app->processes, i);
+
+            if (p->arrival <= app->clock && p->remaining > 0) {
+                app->running = p;
+                last_index = i;
+                app->quantum_left = app->quantum;
+                break;
+            }
         }
-        app->quantum_left = app->quantum;
     }
+
+    // Run the current process
     if (app->running) {
         app->running->remaining--;
         app->quantum_left--;
-        if (app->running->remaining==0 || app->quantum_left==0)
-            app->running=NULL;
+
+        // If finished, immediately clear
+        if (app->running->remaining == 0)
+            app->running = NULL;
     }
 }
+
+// static void scheduler_rr  (App *app, int tick)
+// {
+//     /* simple demo: just decrement running->remaining & quantum_left */
+//     if (!app->running) {
+//         /* pick first ready proc */
+//         for (guint i=0;i<app->processes->len;i++) {
+//             Process *p=g_ptr_array_index(app->processes,i);
+//             if (p->arrival<=app->clock && p->remaining>0) { app->running=p; break;}
+//         }
+//         app->quantum_left = app->quantum;
+//     }
+//     if (app->running) {
+//         app->running->remaining--;
+//         app->quantum_left--;
+//         if (app->running->remaining==0 || app->quantum_left==0)
+//             app->running=NULL;
+//     }
+// }
 
 static void on_start_clicked(GtkButton *btn, gpointer user_data)
 {
@@ -238,7 +354,7 @@ static void on_reset_clicked(GtkButton *btn, gpointer user_data)
 static void on_algo_toggled(GtkCheckButton *tb, gpointer data)
 {
     App *app = data;
-    gboolean rr = gtk_check_button_get_active(tb); 
+    gboolean rr = gtk_check_button_get_active(tb);
     gtk_widget_set_visible(app->entry_quantum, rr);
 }
 
