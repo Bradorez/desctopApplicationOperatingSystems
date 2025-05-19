@@ -32,6 +32,10 @@ struct _App {
     GtkWidget      *btn_start;
     GtkWidget      *btn_reset;
 
+    GtkWidget      *alg_radio_fcfs;
+    GtkWidget      *alg_radio_sjn;
+    GtkWidget      *alg_radio_srt;
+
     /* Simulation state */
     GPtrArray      *processes;          /* <Process *>            */
     ScheduleStepFn  step_fn;            /* algorithm callback     */
@@ -45,6 +49,7 @@ struct _App {
 
 /* ----------  Forward declarations ---------- */
 static void gui_build(App *app);
+
 static gboolean simulate_timeout_cb(gpointer user_data);
 
 /* ----------  Helper: add row to GtkListStore ---------- */
@@ -237,34 +242,60 @@ static void scheduler_fcfs(App *app, int tick)
 // static void scheduler_sjn (App *app, int tick)     { /* TODO */ }
 static void scheduler_sjn(App *app, int tick)
 {
+    // Only choose a new process if none is running
     if (!app->running) {
         Process *shortest = NULL;
         int min_burst = INT_MAX;
+        int earliest_arrival = INT_MAX;
 
-        // Among all arrived and unfinished processes, pick the shortest one
         for (guint i = 0; i < app->processes->len; ++i) {
             Process *p = g_ptr_array_index(app->processes, i);
             if (p->remaining > 0 && p->arrival <= app->clock) {
-                if (p->burst < min_burst) {
+                // Choose the shortest burst
+                if (p->burst < min_burst || (p->burst == min_burst && p->arrival < earliest_arrival)) {
                     min_burst = p->burst;
+                    earliest_arrival = p->arrival;
                     shortest = p;
                 }
             }
         }
 
-        app->running = shortest;
+        if (shortest)
+            app->running = shortest;
     }
 
     if (app->running) {
         app->running->remaining--;
-
-        if (app->running->remaining == 0) {
+        if (app->running->remaining == 0)
             app->running = NULL;
-        }
     }
 }
-static void scheduler_srt (App *app, int tick)     { /* TODO */ }
 
+
+static void scheduler_srt(App *app, int tick)
+{
+    Process *shortest = NULL;
+    int min_remaining = INT_MAX;
+
+    for (guint i = 0; i < app->processes->len; ++i) {
+        Process *p = g_ptr_array_index(app->processes, i);
+        if (p->remaining > 0 && p->arrival <= app->clock) {
+            if (p->remaining < min_remaining ||
+                (p->remaining == min_remaining && p->arrival < (shortest ? shortest->arrival : INT_MAX))) {
+                min_remaining = p->remaining;
+                shortest = p;
+            }
+        }
+    }
+
+    app->running = shortest;
+
+    if (app->running) {
+        app->running->remaining--;
+        if (app->running->remaining == 0)
+            app->running = NULL;
+    }
+}
 
 static void scheduler_rr(App *app, int tick)
 {
@@ -308,26 +339,51 @@ static void on_start_clicked(GtkButton *btn, gpointer user_data)
     App *app = user_data;
     if (app->processes->len == 0) return;
 
-    /* choose algorithm manually */
+    /* Which algorithm radio-button is active? */
     if (gtk_check_button_get_active(GTK_CHECK_BUTTON(app->alg_radio_rr))) {
-        app->step_fn = scheduler_rr;
-        app->quantum = atoi(gtk_editable_get_text(GTK_EDITABLE(app->entry_quantum)));
-    } else {
-        // fallback to FCFS for now (you can add other buttons later)
-        app->step_fn = scheduler_fcfs;
+        app->step_fn  = scheduler_rr;
+        app->quantum  = atoi(gtk_editable_get_text(GTK_EDITABLE(app->entry_quantum)));
+    }
+    else if (gtk_check_button_get_active(GTK_CHECK_BUTTON(app->alg_radio_sjn))) {
+        app->step_fn  = scheduler_sjn;
+    }
+    else if (gtk_check_button_get_active(GTK_CHECK_BUTTON(app->alg_radio_srt))) {
+        app->step_fn  = scheduler_srt;
+    }
+    else {  /* FCFS is the default */
+        app->step_fn  = scheduler_fcfs;
     }
 
     gtk_widget_set_sensitive(GTK_WIDGET(app->btn_start), FALSE);
-    app->clock = 0;
-    app->running = NULL;
-    app->timer_id = g_timeout_add(app->sim_tick_ms, simulate_timeout_cb, app);
+    app->clock     = 0;
+    app->running   = NULL;
+    app->timer_id  = g_timeout_add(app->sim_tick_ms, simulate_timeout_cb, app);
 }
+
+// static void on_start_clicked(GtkButton *btn, gpointer user_data)
+// {
+//     App *app = user_data;
+//     if (app->processes->len == 0) return;
+
+//     /* choose algorithm manually */
+//     if (gtk_check_button_get_active(GTK_CHECK_BUTTON(app->alg_radio_rr))) {
+//         app->step_fn = scheduler_rr;
+//         app->quantum = atoi(gtk_editable_get_text(GTK_EDITABLE(app->entry_quantum)));
+//     } else {
+//         // fallback to FCFS for now (you can add other buttons later)
+//         app->step_fn = scheduler_fcfs;
+//     }
+
+//     gtk_widget_set_sensitive(GTK_WIDGET(app->btn_start), FALSE);
+//     app->clock = 0;
+//     app->running = NULL;
+//     app->timer_id = g_timeout_add(app->sim_tick_ms, simulate_timeout_cb, app);
+// }
 
 /* ----------  Simulation timer ---------- */
 static gboolean simulate_timeout_cb(gpointer user_data)
 {
     App *app = user_data;
-    app->clock++;
 
     /* call algorithm one step */
     if (app->step_fn)
@@ -335,6 +391,7 @@ static gboolean simulate_timeout_cb(gpointer user_data)
 
     /* redraw canvas */
     gtk_widget_queue_draw(GTK_WIDGET(app->canvas));
+    app->clock++;
 
     /* very naive stop condition: all remaining ==0 */
     gboolean done = TRUE;
@@ -423,6 +480,9 @@ static void gui_build(App *app)
     gtk_check_button_set_active(GTK_CHECK_BUTTON(radio_fcfs), TRUE);
 
     app->alg_radio_rr = radio_rr;
+    app->alg_radio_fcfs = radio_fcfs;
+    app->alg_radio_sjn  = radio_sjn;
+    app->alg_radio_srt  = radio_srt;
 
     gtk_grid_attach(GTK_GRID(grid), radio_fcfs, 0,1,1,1);
     gtk_grid_attach(GTK_GRID(grid), radio_sjn,  1,1,1,1);
