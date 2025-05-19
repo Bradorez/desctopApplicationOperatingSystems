@@ -199,8 +199,70 @@ cairo_show_text(cr, state);
 // }
 
 /* ----------  Algorithm stubs (1 tick each) ---------- */
-static void scheduler_fcfs(App *app, int tick)     { /* TODO */ }
-static void scheduler_sjn (App *app, int tick)     { /* TODO */ }
+// static void scheduler_fcfs(App *app, int tick)     { /* TODO */ }
+static void scheduler_fcfs(App *app, int tick)
+{
+    if (!app->running) {
+        Process *earliest = NULL;
+        int min_arrival = INT_MAX;
+
+        // Find the first process that has arrived and not finished
+        for (guint i = 0; i < app->processes->len; ++i) {
+            Process *p = g_ptr_array_index(app->processes, i);
+            if (p->remaining > 0 && p->arrival <= app->clock) {
+                if (p->arrival < min_arrival) {
+                    min_arrival = p->arrival;
+                    earliest = p;
+                } else if (p->arrival == min_arrival && !earliest) {
+                    earliest = p;
+                }
+            }
+        }
+
+        // Assign the selected process to run
+        if (earliest) {
+            app->running = earliest;
+        }
+    }
+
+    // Run the current process if we have one
+    if (app->running) {
+        app->running->remaining--;
+
+        if (app->running->remaining == 0) {
+            app->running = NULL;
+        }
+    }
+}
+// static void scheduler_sjn (App *app, int tick)     { /* TODO */ }
+static void scheduler_sjn(App *app, int tick)
+{
+    if (!app->running) {
+        Process *shortest = NULL;
+        int min_burst = INT_MAX;
+
+        // Among all arrived and unfinished processes, pick the shortest one
+        for (guint i = 0; i < app->processes->len; ++i) {
+            Process *p = g_ptr_array_index(app->processes, i);
+            if (p->remaining > 0 && p->arrival <= app->clock) {
+                if (p->burst < min_burst) {
+                    min_burst = p->burst;
+                    shortest = p;
+                }
+            }
+        }
+
+        app->running = shortest;
+    }
+
+    if (app->running) {
+        app->running->remaining--;
+
+        if (app->running->remaining == 0) {
+            app->running = NULL;
+        }
+    }
+}
 static void scheduler_srt (App *app, int tick)     { /* TODO */ }
 
 
@@ -241,25 +303,6 @@ static void scheduler_rr(App *app, int tick)
     }
 }
 
-// static void scheduler_rr  (App *app, int tick)
-// {
-//     /* simple demo: just decrement running->remaining & quantum_left */
-//     if (!app->running) {
-//         /* pick first ready proc */
-//         for (guint i=0;i<app->processes->len;i++) {
-//             Process *p=g_ptr_array_index(app->processes,i);
-//             if (p->arrival<=app->clock && p->remaining>0) { app->running=p; break;}
-//         }
-//         app->quantum_left = app->quantum;
-//     }
-//     if (app->running) {
-//         app->running->remaining--;
-//         app->quantum_left--;
-//         if (app->running->remaining==0 || app->quantum_left==0)
-//             app->running=NULL;
-//     }
-// }
-
 static void on_start_clicked(GtkButton *btn, gpointer user_data)
 {
     App *app = user_data;
@@ -279,36 +322,6 @@ static void on_start_clicked(GtkButton *btn, gpointer user_data)
     app->running = NULL;
     app->timer_id = g_timeout_add(app->sim_tick_ms, simulate_timeout_cb, app);
 }
-
-/* ----------  Start Simulation ---------- */
-// static void on_start_clicked(GtkButton *btn, gpointer user_data)
-// {
-//     App *app = user_data;
-//     if (app->processes->len == 0) return;
-
-//     /* choose algorithm */
-//     if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->alg_radio_rr))) {
-//         app->step_fn = scheduler_rr;
-//         app->quantum = atoi(gtk_editable_get_text(GTK_EDITABLE(app->entry_quantum)));
-//     } else {
-//         /* using label text to branch is sufficient here */
-//         const char *sel = gtk_toggle_button_get_group(GTK_TOGGLE_BUTTON(app->alg_radio_rr))->data
-//                           ? gtk_button_get_label(GTK_BUTTON(
-//                               GTK_WIDGET(gtk_toggle_button_get_group(GTK_TOGGLE_BUTTON(app->alg_radio_rr))->data)))
-//                           : "";
-//         if (g_strcmp0(sel,"SJN")==0)  app->step_fn=scheduler_sjn;
-//         else if (g_strcmp0(sel,"SRT")==0) app->step_fn=scheduler_srt;
-//         else app->step_fn=scheduler_fcfs;
-//     }
-
-//     /* disable input */
-//     gtk_widget_set_sensitive(GTK_WIDGET(app->btn_start), FALSE);
-
-//     /* init state */
-//     app->clock = 0;
-//     app->running = NULL;
-//     app->timer_id = g_timeout_add(app->sim_tick_ms, simulate_timeout_cb, app);
-// }
 
 /* ----------  Simulation timer ---------- */
 static gboolean simulate_timeout_cb(gpointer user_data)
