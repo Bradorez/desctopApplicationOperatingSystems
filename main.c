@@ -160,11 +160,18 @@ cairo_rectangle(cr, label_w, y + 2, frac * bar_w, 20);
 cairo_fill(cr);
 
 /* 4️⃣  State text (waiting / done) */
+// const char *state = NULL;
+// if (p->remaining == 0)
+// state = "done";
+// else if (p != app->running)
+// state = "waiting";
 const char *state = NULL;
 if (p->remaining == 0)
-state = "done";
-else if (p != app->running)
-state = "waiting";
+    state = "done";
+else if (p == app->running)
+    state = "running";
+else
+    state = "ready";
 
 if (state)
 {
